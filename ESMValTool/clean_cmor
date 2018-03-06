@@ -1,0 +1,15 @@
+#!/bin/bash -e
+
+ESMVALROOT=/nird/home/johiak/NorESMValTool
+SCRIPTDIR=`dirname \`readlink -f $0\``
+CMOR_OUTDIR=$ESMVALROOT/data/cmor
+
+# CMORization
+while read arg start_year end_year
+do
+    cmor_dir=$CMOR_OUTDIR/${arg}.${start_year}-${end_year}
+    if [ -d ${cmor_dir} ]; then # add additional constraint? Size? Number of files?
+	rm -r $cmor_dir
+	echo "Clearning $cmor_dir"
+    fi
+done<$SCRIPTDIR/cases_list

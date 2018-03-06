@@ -1,0 +1,229 @@
+#!/bin/bash -e
+
+display_usage() {
+        echo 
+        echo "    --------------------------------- SCRIPT USAGE ------------------------------------"
+        echo "    Syntax (NIRD):"
+        echo "    $ esmval_portrait_auto [-b] [-p] [-h] arg1"
+        echo
+        echo "    where"
+        echo "                     arg1 = /path/to/NorESMValTool_NAMELIST"
+        echo
+        echo "    Options:"
+        echo "      -b: Create BIAS plot (in addition to the RMSE plot)"
+        echo "      -p: Publish plots in /projects/NS2345K/www/noresm_diagnostics/simN/ESMValTool_DIAG"
+        echo "      -h: Display usage information"
+	echo
+	echo "    Difference to esmval_portrait_auto: this script reads sim names and climo yrs from a file (cases_list)"
+        }
+
+calc_bias=false
+publish_plots=false
+HELP=false
+
+while true; do
+  case "$1" in
+    -b | --bias ) calc_bias=true; shift ;;
+    -p | --publish ) publish_plots=true; shift ;;
+    -h | --help ) HELP=true; shift ;;
+    -- ) shift; break ;;
+    * ) break ;;
+  esac
+done
+
+if [ "$HELP" = true ]; then
+   display_usage
+   exit
+fi
+
+SCRIPTDIR=`dirname \`readlink -f $0\``
+ESMVALROOT=/nird/home/johiak/NorESMValTool
+CMORIZEDIR=$ESMVALROOT/scripts
+ESMVALDIR=$ESMVALROOT/tools/ESMValTool
+NAMELISTDIR=$ESMVALROOT/mods/namelists
+ESMVAL_WORKPATH=$ESMVALROOT/data/work
+CFGDIR=$ESMVALROOT/tools/ESMValTool/nml/cfg_perfmetrics/CMIP5
+CMOR_OUTDIR=$ESMVALROOT/data/cmor
+PLOTDIR=$ESMVALROOT/plots/perfmetrics_grading
+WWWDIR=/projects/NS2345K/www/noresm_diagnostics
+SIMDIR=/projects/NS2345K/noresm/cases
+
+
+# print help information if input arguments are missing 
+if [[ ! $1 || `echo $1 | head -1c` == '-' ]]
+then
+  display_usage
+  exit
+fi
+
+# Read test sim
+TESTSIM=`head -n 1 $SCRIPTDIR/cases_list | awk '{print $1}'`
+
+# Number of CMORized models
+nCMOR=`cat $SCRIPTDIR/cases_list | wc -l`
+
+# CMORization
+while read arg start_year end_year
+do
+    min_size="10000"
+    cmor_dir=$CMOR_OUTDIR/$arg
+    if [ -d "$cmor_dir".* ]; then # add additional constraint? Size? Number of files?
+	temp=`basename $cmor_dir.*`
+	years=${temp##*.}
+	echo $arg is already CMORized \(years $years\) #ask user if years are ok?
+    else
+	echo $arg is not CMORized yet.
+	echo CMORizing $arg \(years $start_year-$end_year\)... 
+	# CMORize
+	$CMORIZEDIR/cmorize_portrait_diagram $SIMDIR/$arg $start_year $end_year &
+    fi
+done<$SCRIPTDIR/cases_list
+
+wait
+
+# ensure that permission of new folders and files will be open 
+umask u=rxw,g=rxw,o=rx
+
+# delete any existing CMORized model entries in NorESMValTool namelist
+sed -i '/<!--CMORized,ta,Amon-->/,/<!--endCMORized,ta,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,ua,Amon-->/,/<!--endCMORized,ua,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,va,Amon-->/,/<!--endCMORized,va,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,zg,Amon-->/,/<!--endCMORized,zg,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,hus,Amon-->/,/<!--endCMORized,hus,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,tas,Amon-->/,/<!--endCMORized,tas,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,pr,Amon-->/,/<!--endCMORized,pr,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,clt,Amon-->/,/<!--endCMORized,clt,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,rlut,Amon-->/,/<!--endCMORized,rlut,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,rsut,Amon-->/,/<!--endCMORized,rsut,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,LW_CRE,Amon-->/,/<!--endCMORized,LW_CRE,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,SW_CRE,Amon-->/,/<!--endCMORized,SW_CRE,Amon-->/{//!d}' $1
+sed -i '/<!--CMORized,od550aer,aero-->/,/<!--endCMORized,od550aer,aero-->/{//!d}' $1
+
+
+models2plot=()
+sim_names=()
+REGION=$(echo $1 | cut -d"_" -f 5 | cut -d"." -f1)
+BIAS_NML="$NAMELISTDIR/namelist_portrait_diagram_BIAS_$REGION.xml"
+NAMELIST=$ESMVAL_WORKPATH/`basename $1 .xml`_"$USER".xml 
+BIAS_NAMELIST=$ESMVAL_WORKPATH/`basename $BIAS_NML .xml`_"$USER".xml
+RMSE_LOG=$ESMVAL_WORKPATH/`basename $1 .xml`_"$USER".log
+BIAS_LOG=$ESMVAL_WORKPATH/`basename $BIAS_NAMELIST .xml`_"$USER".log
+cp $1 $NAMELIST
+cp $BIAS_NML $BIAS_NAMELIST
+
+
+while read arg dummy1 dummy2
+do
+    sim=$CMOR_OUTDIR/$arg
+    cmor_sim=`basename $sim.*`
+    sim_name=$(basename $cmor_sim)
+    time_period=${sim_name##*.}
+    start_year=${time_period%-*}
+    end_year=${time_period#*-}
+    sim_name=${sim_name%.*}
+    sim_names+=("$sim_name")
+    sim_name=${sim_name//_/-}
+    models2plot+=("$sim_name")
+
+    amon_entry="    <model> CMIP5 $sim_name Amon CMORized r1i1p1 $start_year $end_year $CMOR_OUTDIR/$cmor_sim </model>" 
+    aero_entry="    <model> CMIP5 $sim_name aero CMORized r1i1p1 $start_year $end_year $CMOR_OUTDIR/$cmor_sim </model>"
+
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/ta_*) ]]; then
+	sed -i "/<!--CMORized,ta,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/ua_*) ]]; then
+	sed -i "/<!--CMORized,ua,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/va_*) ]]; then
+	sed -i "/<!--CMORized,va,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/zg_*) ]]; then     
+	sed -i "/<!--CMORized,zg,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/hus_*) ]]; then
+	sed -i "/<!--CMORized,hus,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/tas_*) ]]; then
+	sed -i "/<!--CMORized,tas,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/pr_*) ]]; then
+	sed -i "/<!--CMORized,pr,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/clt_*) ]]; then
+	sed -i "/<!--CMORized,clt,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/rlut_*) ]]; then
+	sed -i "/<!--CMORized,rlut,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/rsut_*) ]]; then
+	sed -i "/<!--CMORized,rsut,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/rlut_*) ]] && [[ $(ls $CMOR_OUTDIR/$cmor_sim/rlutcs_*) ]]; then
+	sed -i "/<!--CMORized,LW_CRE,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/rsut_*) ]] && [[ $(ls $CMOR_OUTDIR/$cmor_sim/rsutcs_*) ]]; then
+	sed -i "/<!--CMORized,SW_CRE,Amon-->/a $amon_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+    if [[ $(ls $CMOR_OUTDIR/$cmor_sim/od550aer_*) ]]; then
+	sed -i "/<!--CMORized,od550aer,aero-->/a $aero_entry" $NAMELIST $BIAS_NAMELIST
+    fi
+done<$SCRIPTDIR/cases_list
+
+# plot Mean-model,Median-model,NorESM1-M and CMORized models only
+pos=$(( ${#models2plot[*]} - 1 ))
+last=${models2plot[$pos]}
+m2p_string="(/\"Mean-model\",\"Median-model\",\"NorESM1-M\","
+for model in "${models2plot[@]}"
+do
+    if [[ $model == $last ]]
+    then
+       m2p_string+=\"$model\"\/\)
+    else
+       m2p_string+=\"$model\",
+    fi
+done
+
+sed -i "s|diag_script_info@models_to_plot = .*|diag_script_info@models_to_plot = $m2p_string|g" $CFGDIR/cfg_perfmetrics_grading_collect*
+
+# use fixed, CMIP5 typical model error
+sed -i "s|diag_script_info@CMIP5_typical_error = .*|diag_script_info@CMIP5_typical_error = True|g" $CFGDIR/cfg_perfmetrics_grading_*
+sed -i "s|diag_script_info@number_of_cmorized_models = .*|diag_script_info@number_of_cmorized_models = $nCMOR|g" $CFGDIR/cfg_perfmetrics_grading_*
+
+
+# run ESMValTool 
+cd $ESMVALDIR 
+if [ `uname -n | grep norstore | wc -l` -gt 0 ]
+then
+  . /usr/share/Modules/init/sh
+  module load python2/2.7 ncl 
+elif [ `uname -n | grep tos | wc -l` -gt 0 ]
+then
+  export NCARG_ROOT=/opt/ncl64 
+  export PATH=/opt/ncl64/bin/:${PATH} 
+  ulimit -s unlimited
+fi
+
+python main.py $NAMELIST # plot RMSE
+
+if [ "$calc_bias" = true ]; then
+   wait
+   python main.py $BIAS_NAMELIST # plot BIAS (if -b option is passed)
+fi
+
+# publish plots (copy to /projects/NS2345K/www/noresm_diagnostics/sim/ESMValTool_DIAG)
+wait
+DATE=`date +%d%m%y`
+if [ "$publish_plots" = true ]; then
+   rmse_plot=$PLOTDIR/`basename $1 .xml`_"$USER"_ta_Glob-850_to_od550aer_Glob_RMSD_grading.png
+   sim_dir="$WWWDIR/$TESTSIM/ESMValTool/"
+   test -d "$sim_dir" || mkdir -p "$sim_dir" && cp "$rmse_plot" "$sim_dir"/RMSE_"$DATE".png
+   #cp "$rmse_plot" "$WWWDIR"/"$sim"/ESMValTool_DIAG/RMSE_"$DATE".png
+   if [ "$calc_bias" = true ]; then
+       bias_plot=$PLOTDIR/`basename $1 .xml`_"$USER"_ta_Glob-850_to_od550aer_Glob_BIAS_grading.png
+       #cp "$bias_plot" "$WWWDIR"/"$sim"/ESMValTool_DIAG/BIAS_"$DATE".png
+       test -d "$sim_dir" || mkdir -p "$sim_dir" && cp "$bias_plot" "$sim_dir"/BIAS_"$DATE".png
+   fi
+fi
+
+
+
